@@ -1,0 +1,253 @@
+#!/usr/bin/perl
+# nagios: -epn
+use strict;
+use warnings;
+use EV::ADNS;
+
+use 5.008001;
+
+our $VERSION = '0.0.1';
+
+our $DEFAULT_TIMEOUT = 15;
+our $DEFAULT_RETRIES = 4;
+our $DEFAULT_WORKERS = 20;
+our $DEFAULT_QUERY_TIMEOUT = 15;
+
+our ($MOD, $P_MOD, $P_THRESHOLD, $P_GETOPT);
+BEGIN {
+    # load Monitoring::*, fallback to Nagios::*
+    ($P_MOD, $P_THRESHOLD, $P_GETOPT) = map {
+        my $suffix = $_;
+        my $package;
+        for my $pre (qw{ Monitoring Nagios }) {
+            $package = $pre . '::' . $suffix;
+            (my $file = $package . '.pm') =~ s|::|/|xmsg;
+
+            eval { require $file; $package->import(); 1; } and last;
+        }
+        $package;
+    } qw{ Plugin Plugin::Threshold Plugin::Getopt };
+
+    $MOD = $P_MOD->new(shortname => 'check_rbl_adns');
+}
+
+sub getopt {
+    my $option = $P_GETOPT->new(
+        usage => 'Usage: %s [options]',
+        version => $VERSION,
+        url => 'https://github.com/ernix/check_rbl_adns',
+        blurb => 'Check SMTP black- or white- listing status',
+    );
+
+    $option->arg(@{$_}) for (
+        [   spec => 'critical|c=i',
+            help => 'Number of blacklisting servers for a critical warning',
+            required => 0,
+            default  => 1,
+        ],
+        [   spec     => 'warning|w=i',
+            help     => 'Number of blacklisting servers for a warning',
+            required => 0,
+            default  => 1,
+        ],
+        [   spec     => 'debug|d',
+            help     => 'Prints debugging information',
+            required => 0,
+            default  => 0,
+        ],
+        [   spec     => 'server|s=s@',
+            help     => 'RBL server',
+            required => 1,
+        ],
+        [   spec     => 'host|H=s',
+            help     => 'SMTP server to check',
+            required => 1,
+        ],
+        [   spec     => 'retry|r=i',
+            help     => 'Number of times to try a DNS query '
+                        . sprintf('(default is %d) ', $DEFAULT_RETRIES),
+            required => 0,
+            default  => $DEFAULT_RETRIES,
+        ],
+        [   spec     => 'workers=i',
+            help     => 'Number of parallel checks',
+            required => 0,
+            default  => $DEFAULT_WORKERS,
+        ],
+        [   spec     => 'whitelistings|wl',
+            help     => 'Check whitelistings instead of blacklistings',
+            required => 0,
+            default  => 0,
+        ],
+        [   spec     => 'query-timeout=i',
+            help     => 'Timeout of the RBL queries',
+            required => 0,
+            default  => $DEFAULT_QUERY_TIMEOUT,
+        ],
+    );
+
+    $option->getopts();
+    return $option;
+}
+
+sub exit_unknown { $MOD->nagios_exit($MOD->UNKNOWN, @_) }
+
+sub sanity_check {
+    my $option = shift;
+
+    if ($option->critical < $option->warning) {
+        return exit_unknown('critical has to be greater or equal warning');
+    }
+
+    return $option;
+}
+
+sub debug {
+    my $option = shift;
+    return sub {
+        my ($msg) = @_;
+
+        if (!defined $msg) {
+            return unknown_exit(q{Internal error: }
+                . q{not enough parameters for 'debug'});
+        }
+
+        return unless $option;
+        return unless $option->debug;
+
+        print "[DBG] $msg\n";
+    };
+}
+
+sub diag {
+    my $option = shift;
+    return sub {
+        my ($msg, $level) = @_;
+        $level ||= 0;
+
+        if (!defined $msg) {
+            return unknown_exit(q{Internal error: }
+                . q{not enough parameters for 'diag'});
+        }
+
+        return if $option->verbose <= $level;
+
+        print {*STDOUT} $msg . "\n";
+
+        return 1;
+    };
+}
+
+sub run {
+    my $time = time;
+
+    my $option = getopt();
+    $option = sanity_check($option);
+
+    my $threshold = $P_THRESHOLD->set_thresholds(
+        warning => $option->warning - 1,
+        critical => $option->critical - 1,
+    );
+
+    my $diag = diag($option);
+    my $debug = debug($option);
+
+    EV::ADNS::submit(
+        $option->host,
+        EV::ADNS::r_addr,
+        EV::ADNS::qf_cname_loose,
+        sub {
+            my ($status, $expires, $ip) = @_;
+
+            # validate
+            if ($status != EV::ADNS::s_ok) {
+                #return exit_unknown(sprintf 'Cannot resolve %s', $option->host);
+                $diag->(sprintf 'Cannot resolve %s, '
+                    . 'assume it is an IP address', $option->host);
+                $ip = $option->host;
+            }
+
+            my @ip_rev = reverse split /\./, $ip;
+            my $whitelisting = $option->get('whitelisting');
+
+            my (@listed, @timeouts);
+            for my $svr (@{$option->server}) {
+                EV::ADNS::submit(
+                    join('.', @ip_rev, $svr),
+                    EV::ADNS::r_addr,
+                    EV::ADNS::qf_cname_loose,
+                    sub {
+                        my ($status, $expires, $addr) = @_;
+                        $debug->('handling a reply');
+
+                        if ($status == EV::ADNS::s_timeout) {
+                            push @timeouts, $svr;
+                        }
+                        elsif ($status == EV::ADNS::s_nodata
+                            || $status == EV::ADNS::s_nxdomain)
+                        {
+
+                            $debug->("no answer: **");
+                            $diag->("not listed in " . $svr);
+                            push @listed, $svr if $whitelisting;
+                        }
+                        elsif ($status == EV::ADNS::s_ok) {
+                            $debug->("host = $addr");
+                            $diag->("listed in $svr as $addr");
+                            push @listed, $svr unless $whitelisting;
+                        }
+                        else {
+                            $diag->('DNS query error: ' . $status);
+                            $diag->('Skipping ' . $svr);
+                        }
+                    },
+                );
+            }
+            $debug->('waiting for replies');
+            EV::run;
+            $debug->('replies received: **');
+
+            my $msg = sprintf "%s %sLISTED on %d server%s of %d", (
+                $option->host,
+                ($whitelisting ? 'NOT WHITE' : 'BLACK'),
+                scalar(@listed), (scalar(@listed) > 1 ? 's' : q{}),
+                scalar(@{$option->server}),
+            );
+
+            if (@timeouts) {
+                $debug->('timeout: **');
+                $msg = sprintf "(%d server%s timed out: %s)", (
+                    scalar(@timeouts), (scalar(@timeouts) > 1 ? 's' : q{}),
+                    join(', ', @timeouts),
+                );
+            }
+
+            if (@listed) {
+                $msg .= " (@listed)";
+            }
+
+            $MOD->add_perfdata(
+                label     => 'servers',
+                value     => scalar(@listed),
+                uom       => q{},
+                threshold => $threshold,
+            );
+
+            $MOD->add_perfdata(
+                label => 'time',
+                value => time - $time,
+                uom   => q{s},
+            );
+
+            return $MOD->nagios_exit(
+                $threshold->get_status(scalar(@listed)),
+                $msg,
+            );
+        },
+    );
+    EV::run;
+}
+
+run() unless caller;
+
+1;
