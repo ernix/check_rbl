@@ -6,7 +6,7 @@ use EV::ADNS;
 
 use 5.008001;
 
-our $VERSION = '0.0.1';
+our $VERSION = '0.02';
 
 our $DEFAULT_TIMEOUT = 15;
 our $DEFAULT_RETRIES = 4;
