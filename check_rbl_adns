@@ -12,6 +12,49 @@ our $DEFAULT_TIMEOUT = 15;
 our $DEFAULT_RETRIES = 4;
 our $DEFAULT_WORKERS = 20;
 our $DEFAULT_QUERY_TIMEOUT = 15;
+our @DEFAULT_SERVERS = (
+    'cbl.abuseat.org',
+    'dnsbl.cyberlogic.net',
+    'bl.deadbeef.com',
+    'spamtrap.drbl.drand.net',
+    'spamsources.fabel.dk',
+    '0spam.fusionzero.com',
+    'mail-abuse.blacklist.jippg.org',
+    'korea.services.net',
+    'spamguard.leadmon.net',
+    'ix.dnsbl.manitu.net',
+    'relays.nether.net',
+    'no-more-funn.moensted.dk',
+    'psbl.surriel.com',
+    'dyna.spamrats.com',
+    'noptr.spamrats.com',
+    'spam.spamrats.com',
+    # this keeps all zones of sorbs excl. spam
+    'dnsbl.sorbs.net',
+    'spam.dnsbl.sorbs.net',
+    'bl.spamcannibal.org',
+    'bl.spamcop.net',
+    'pbl.spamhaus.org',
+    'sbl.spamhaus.org',
+    'xbl.spamhaus.org',
+    'ubl.unsubscore.com',
+    'dnsbl-1.uceprotect.net',
+    'dnsbl-2.uceprotect.net',
+    'dnsbl-3.uceprotect.net',
+    'db.wpbl.info',
+    'access.redhawk.org',
+    'blacklist.sci.kun.nl',
+    'bl.technovision.dk',
+    'dnsbl.kempt.net',
+    'forbidden.icm.edu.pl',
+    'hil.habeas.com',
+    'rbl.schulte.org',
+    'sbl-xbl.spamhaus.org',
+
+    # these are rather slow
+    #'bl.csma.biz',
+    #'sbl.csma.biz',
+);
 
 our ($MOD, $P_MOD, $P_THRESHOLD, $P_GETOPT, %RCODE);
 BEGIN {
@@ -63,7 +106,7 @@ sub getopt {
         ],
         [   spec     => 'server|s=s@',
             help     => 'RBL server',
-            required => 1,
+            required => 0,
         ],
         [   spec     => 'host|H=s',
             help     => 'SMTP server to check',
@@ -176,8 +219,12 @@ sub run {
             my @ip_rev = reverse split /\./, $ip;
             my $whitelistings = $option->get('whitelistings');
 
+            my @servers = $option->server
+                ? @{$option->server}
+                : @DEFAULT_SERVERS;
+
             my (@listed, @timeouts);
-            for my $svr (@{$option->server}) {
+            for my $svr (@servers) {
                 EV::ADNS::submit(
                     join('.', @ip_rev, $svr),
                     EV::ADNS::r_addr,
@@ -217,7 +264,7 @@ sub run {
                 $option->host,
                 ($whitelistings ? 'NOT WHITE' : 'BLACK'),
                 scalar(@listed), (scalar(@listed) > 1 ? 's' : q{}),
-                scalar(@{$option->server}),
+                scalar(@servers),
             );
 
             if (@timeouts) {
