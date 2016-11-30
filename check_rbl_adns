@@ -168,7 +168,7 @@ sub run {
             }
 
             my @ip_rev = reverse split /\./, $ip;
-            my $whitelisting = $option->get('whitelisting');
+            my $whitelistings = $option->get('whitelistings');
 
             my (@listed, @timeouts);
             for my $svr (@{$option->server}) {
@@ -189,12 +189,12 @@ sub run {
 
                             $debug->("no answer: **");
                             $diag->("not listed in " . $svr);
-                            push @listed, $svr if $whitelisting;
+                            push @listed, $svr if $whitelistings;
                         }
                         elsif ($status == EV::ADNS::s_ok) {
                             $debug->("host = $addr");
                             $diag->("listed in $svr as $addr");
-                            push @listed, $svr unless $whitelisting;
+                            push @listed, $svr unless $whitelistings;
                         }
                         else {
                             $diag->('DNS query error: ' . $status);
@@ -209,7 +209,7 @@ sub run {
 
             my $msg = sprintf "%s %sLISTED on %d server%s of %d", (
                 $option->host,
-                ($whitelisting ? 'NOT WHITE' : 'BLACK'),
+                ($whitelistings ? 'NOT WHITE' : 'BLACK'),
                 scalar(@listed), (scalar(@listed) > 1 ? 's' : q{}),
                 scalar(@{$option->server}),
             );
