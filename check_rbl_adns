@@ -13,7 +13,7 @@ our $DEFAULT_RETRIES = 4;
 our $DEFAULT_WORKERS = 20;
 our $DEFAULT_QUERY_TIMEOUT = 15;
 
-our ($MOD, $P_MOD, $P_THRESHOLD, $P_GETOPT);
+our ($MOD, $P_MOD, $P_THRESHOLD, $P_GETOPT, %RCODE);
 BEGIN {
     # load Monitoring::*, fallback to Nagios::*
     ($P_MOD, $P_THRESHOLD, $P_GETOPT) = map {
@@ -29,6 +29,12 @@ BEGIN {
     } qw{ Plugin Plugin::Threshold Plugin::Getopt };
 
     $MOD = $P_MOD->new(shortname => 'check_rbl_adns');
+
+    # Gather EV::ADNS::s_*
+    for (keys %EV::ADNS::) {
+        next unless m/\As_/xms;
+        $RCODE{EV::ADNS->$_} = $_;
+    }
 }
 
 sub getopt {
@@ -197,7 +203,7 @@ sub run {
                             push @listed, $svr unless $whitelistings;
                         }
                         else {
-                            $diag->('DNS query error: ' . $status);
+                            $diag->('DNS query error: ' . $RCODE{$status});
                             $diag->('Skipping ' . $svr);
                         }
                     },
